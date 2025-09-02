@@ -1,64 +1,63 @@
+from flask import Flask, request, jsonify
+import re
 import smtplib
 import dns.resolver
 import socket
-import re
-from flask import Flask, request, jsonify
-import smtplib, socket, dns.resolver
 
 app = Flask(__name__)
-def get_mx_records(domain):
+
+# Simple email format validator
+def is_valid_format(email):
+    regex = r'^[\w\.-]+@[\w\.-]+\.\w+$'
+    return re.match(regex, email)
+
+# Extract domain from email
+def get_domain(email):
+    return email.split('@')[-1]
+
+# Verify email using SMTP
+def verify_email_smtp(email):
     try:
-        answers = dns.resolver.resolve(domain, 'MX')
-        mx_records = [r.exchange.to_text() for r in answers]
-        # print(f"[INFO] MX records for {domain}: {mx_records}")
-        return mx_records
-    except Exception as e:
-        print(f"[ERROR] Failed to get MX records for {domain}: {e}")
-        return []
+        domain = get_domain(email)
 
-def is_valid_email_smtp(email):
-    # Basic format check
-    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-        print("[ERROR] Invalid email format.")
-        return False
+        # Get MX records
+        records = dns.resolver.resolve(domain, 'MX')
+        mx_record = str(sorted(records, key=lambda r: r.preference)[0].exchange)
 
-    domain = email.split('@')[1]
-    mx_records = get_mx_records(domain)
-
-    if not mx_records:
-        print(f"[ERROR] No MX records found for {domain}")
-        return False
-
-    # Use the first MX record
-    mail_server = mx_records[0]
-    try:
-        print(f"[INFO] Connecting to {mail_server}...")
+        # SMTP conversation
         server = smtplib.SMTP(timeout=10)
-        server.connect(mail_server)
-        server.helo(socket.gethostname())
-        server.mail("test@example.com")  # Dummy sender
+        server.set_debuglevel(0)  # Turn on debug output if needed
+        server.connect(mx_record)
+        server.helo(server.local_hostname)
+        server.mail('you@example.com')  # Use any dummy sender
         code, message = server.rcpt(email)
         server.quit()
-        print(f"[INFO] Server response: {code} {message}")
 
-        if code == 250:
-            print(f"[VALID] {email} is valid.")
-            return True
-        else:
-            print(f"[INVALID] {email} rejected by server. Code: {code}")
-            return False
-    except Exception as e:
-        print(f"[ERROR] SMTP connection failed: {e}")
+        # SMTP 250 means accepted
+        return code == 250
+
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, socket.timeout, smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError):
         return False
-    
-@app.route('/verify-email', methods=['POST'])
-def verify():
-    email = request.json.get("email")
-    if not email:
-        return jsonify({"error": "Email is required"}), 400
-    result = is_valid_email_smtp(email)
-    return jsonify({"email": email, "valid": result})
 
+
+@app.route('/validate-email', methods=['POST'])
+def validate_email():
+    data = request.get_json()
+    email = data.get('email')
+
+    if not email or not is_valid_format(email):
+        return jsonify({'valid': False, 'reason': 'Invalid format'}), 400
+
+    is_valid = verify_email_smtp(email)
+
+    if is_valid:
+        return jsonify({'valid': True}), 200
+    else:
+        return jsonify({'valid': False, 'reason': 'SMTP verification failed'}), 400
+
+
+# if __name__ == '__main__':
+#     app.run(host='0.0.0.0', port=8080)
 
 
 
